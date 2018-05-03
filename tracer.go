@@ -30,6 +30,8 @@ import (
 	"github.com/uber/jaeger-client-go/internal/throttler"
 	"github.com/uber/jaeger-client-go/log"
 	"github.com/uber/jaeger-client-go/utils"
+
+	"github.com/loicgelle/jaeger-go-lttng-instr"
 )
 
 // Tracer implements opentracing.Tracer.
@@ -269,6 +271,17 @@ func (t *Tracer) startSpanWithOptions(
 	sp := t.newSpan()
 	sp.context = ctx
 	sp.observer = t.observer.OnStartSpan(sp, operationName, options)
+
+	// Report start span event to LTTng
+	lttng.ReportStartSpan(
+		uint64(ctx.traceID.High),
+		uint64(ctx.traceID.Low),
+		uint64(ctx.spanID),
+		uint64(ctx.parentID),
+		operationName,
+		options.StartTime,
+	)
+
 	return t.startSpanInternal(
 		sp,
 		operationName,
@@ -398,6 +411,14 @@ func (t *Tracer) reportSpan(sp *Span) {
 	if t.options.poolSpans {
 		t.spanPool.Put(sp)
 	}
+	
+	// Report end span event to LTTng
+	lttng.ReportEndSpan(
+		uint64(sp.context.traceID.High),
+		uint64(sp.context.traceID.Low),
+		uint64(sp.context.spanID),
+		sp.duration,
+	)
 }
 
 // randomID generates a random trace/span ID, using tracer.random() generator.
