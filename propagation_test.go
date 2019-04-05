@@ -24,12 +24,11 @@ import (
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/uber/jaeger-lib/metrics"
-	"github.com/uber/jaeger-lib/metrics/testutils"
+	"github.com/uber/jaeger-lib/metrics/metricstest"
 )
 
-func initMetrics() (*metrics.LocalFactory, *Metrics) {
-	factory := metrics.NewLocalFactory(0)
+func initMetrics() (*metricstest.Factory, *Metrics) {
+	factory := metricstest.NewFactory(0)
 	return factory, NewMetrics(factory, nil)
 }
 
@@ -118,11 +117,11 @@ func TestSpanPropagator(t *testing.T) {
 		assert.Equal(t, exp, sp, formatName)
 	}
 
-	testutils.AssertCounterMetrics(t, metricsFactory, []testutils.ExpectedMetric{
-		{Name: "jaeger.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 1 + 2*len(tests)},
-		{Name: "jaeger.finished_spans", Value: 1 + len(tests)},
-		{Name: "jaeger.traces", Tags: map[string]string{"state": "started", "sampled": "y"}, Value: 1},
-		{Name: "jaeger.traces", Tags: map[string]string{"state": "joined", "sampled": "y"}, Value: len(tests)},
+	metricsFactory.AssertCounterMetrics(t, []metricstest.ExpectedMetric{
+		{Name: "jaeger.tracer.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 1 + 2*len(tests)},
+		{Name: "jaeger.tracer.finished_spans", Value: 1 + len(tests)},
+		{Name: "jaeger.tracer.traces", Tags: map[string]string{"state": "started", "sampled": "y"}, Value: 1},
+		{Name: "jaeger.tracer.traces", Tags: map[string]string{"state": "joined", "sampled": "y"}, Value: len(tests)},
 	}...)
 }
 
@@ -151,7 +150,7 @@ func TestDecodingError(t *testing.T) {
 	_, err := tracer.Extract(opentracing.HTTPHeaders, tmc)
 	assert.Error(t, err)
 
-	testutils.AssertCounterMetrics(t, metricsFactory, testutils.ExpectedMetric{Name: "jaeger.span_context_decoding_errors", Value: 1})
+	metricsFactory.AssertCounterMetrics(t, metricstest.ExpectedMetric{Name: "jaeger.tracer.span_context_decoding_errors", Value: 1})
 }
 
 func TestBaggagePropagationHTTP(t *testing.T) {
@@ -179,31 +178,46 @@ func TestBaggagePropagationHTTP(t *testing.T) {
 }
 
 func TestJaegerBaggageHeader(t *testing.T) {
-	metricsFactory, metrics := initMetrics()
-	tracer, closer := NewTracer("DOOP",
-		NewConstSampler(true),
-		NewNullReporter(),
-		TracerOptions.Metrics(metrics),
-	)
-	defer closer.Close()
-
-	h := http.Header{}
-	h.Add(JaegerBaggageHeader, "key1=value1, key 2=value two")
-
-	ctx, err := tracer.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(h))
-	require.NoError(t, err)
-
-	sp := tracer.StartSpan("root", opentracing.ChildOf(ctx)).(*Span)
-
-	assert.Equal(t, "value1", sp.BaggageItem("key1"))
-	assert.Equal(t, "value two", sp.BaggageItem("key 2"))
-
-	// ensure that traces.started counter is incremented, not traces.joined
-	testutils.AssertCounterMetrics(t, metricsFactory,
-		testutils.ExpectedMetric{
-			Name: "jaeger.traces", Tags: map[string]string{"state": "started", "sampled": "y"}, Value: 1,
+	var testcases = []struct {
+		refFunc func(opentracing.SpanContext) opentracing.SpanReference
+	}{
+		{
+			refFunc: opentracing.ChildOf,
 		},
-	)
+		{
+			refFunc: opentracing.FollowsFrom,
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run("", func(t *testing.T) {
+			metricsFactory, metrics := initMetrics()
+			tracer, closer := NewTracer("DOOP",
+				NewConstSampler(true),
+				NewNullReporter(),
+				TracerOptions.Metrics(metrics),
+			)
+			defer closer.Close()
+
+			h := http.Header{}
+			h.Add(JaegerBaggageHeader, "key1=value1, key 2=value two")
+
+			ctx, err := tracer.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(h))
+			require.NoError(t, err)
+
+			sp := tracer.StartSpan("root", testcase.refFunc(ctx)).(*Span)
+
+			assert.Equal(t, "value1", sp.BaggageItem("key1"))
+			assert.Equal(t, "value two", sp.BaggageItem("key 2"))
+
+			// ensure that traces.started counter is incremented, not traces.joined
+			metricsFactory.AssertCounterMetrics(t,
+				metricstest.ExpectedMetric{
+					Name: "jaeger.tracer.traces", Tags: map[string]string{"state": "started", "sampled": "y"}, Value: 1,
+				},
+			)
+		})
+	}
 }
 
 func TestParseCommaSeperatedMap(t *testing.T) {
@@ -222,7 +236,7 @@ func TestParseCommaSeperatedMap(t *testing.T) {
 	}
 
 	for _, testcase := range testcases {
-		m := (&textMapPropagator{
+		m := (&TextMapPropagator{
 			headerKeys: getDefaultHeadersConfig(),
 		}).parseCommaSeparatedMap(testcase.in)
 		assert.Equal(t, testcase.out, m)
@@ -230,35 +244,51 @@ func TestParseCommaSeperatedMap(t *testing.T) {
 }
 
 func TestDebugCorrelationID(t *testing.T) {
-	metricsFactory, metrics := initMetrics()
-	tracer, closer := NewTracer("DOOP",
-		NewConstSampler(true),
-		NewNullReporter(),
-		TracerOptions.Metrics(metrics),
-	)
-	defer closer.Close()
-
-	h := http.Header{}
-	val := "value1"
-	h.Add(JaegerDebugHeader, val)
-	ctx, err := tracer.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(h))
-	require.NoError(t, err)
-	assert.EqualValues(t, 0, ctx.(SpanContext).parentID)
-	assert.EqualValues(t, val, ctx.(SpanContext).debugID)
-	sp := tracer.StartSpan("root", opentracing.ChildOf(ctx)).(*Span)
-	assert.EqualValues(t, 0, sp.context.parentID)
-	assert.True(t, sp.context.traceID.IsValid())
-	assert.True(t, sp.context.IsSampled())
-	assert.True(t, sp.context.IsDebug())
-
-	tag := findDomainTag(sp, JaegerDebugHeader)
-	assert.NotNil(t, tag)
-	assert.Equal(t, val, tag.value)
-
-	// ensure that traces.started counter is incremented, not traces.joined
-	testutils.AssertCounterMetrics(t, metricsFactory,
-		testutils.ExpectedMetric{
-			Name: "jaeger.traces", Tags: map[string]string{"state": "started", "sampled": "y"}, Value: 1,
+	var testcases = []struct {
+		refType string
+		refFunc func(opentracing.SpanContext) opentracing.SpanReference
+	}{
+		{
+			refFunc: opentracing.ChildOf,
 		},
-	)
+		{
+			refFunc: opentracing.FollowsFrom,
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run("", func(t *testing.T) {
+			metricsFactory, metrics := initMetrics()
+			tracer, closer := NewTracer("DOOP",
+				NewConstSampler(true),
+				NewNullReporter(),
+				TracerOptions.Metrics(metrics),
+			)
+			defer closer.Close()
+
+			h := http.Header{}
+			val := "value1"
+			h.Add(JaegerDebugHeader, val)
+			ctx, err := tracer.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(h))
+			require.NoError(t, err)
+			assert.EqualValues(t, 0, ctx.(SpanContext).parentID)
+			assert.EqualValues(t, val, ctx.(SpanContext).debugID)
+			sp := tracer.StartSpan("root", testcase.refFunc(ctx)).(*Span)
+			assert.EqualValues(t, 0, sp.context.parentID)
+			assert.True(t, sp.context.traceID.IsValid())
+			assert.True(t, sp.context.IsSampled())
+			assert.True(t, sp.context.IsDebug())
+
+			tag := findDomainTag(sp, JaegerDebugHeader)
+			assert.NotNil(t, tag)
+			assert.Equal(t, val, tag.value)
+
+			// ensure that traces.started counter is incremented, not traces.joined
+			metricsFactory.AssertCounterMetrics(t,
+				metricstest.ExpectedMetric{
+					Name: "jaeger.tracer.traces", Tags: map[string]string{"state": "started", "sampled": "y"}, Value: 1,
+				},
+			)
+		})
+	}
 }

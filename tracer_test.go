@@ -22,11 +22,11 @@ import (
 
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
+	"github.com/opentracing/opentracing-go/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"github.com/uber/jaeger-lib/metrics"
-	"github.com/uber/jaeger-lib/metrics/testutils"
+	"github.com/uber/jaeger-lib/metrics/metricstest"
 
 	"github.com/uber/jaeger-client-go/internal/baggage"
 	"github.com/uber/jaeger-client-go/log"
@@ -37,11 +37,11 @@ type tracerSuite struct {
 	suite.Suite
 	tracer         opentracing.Tracer
 	closer         io.Closer
-	metricsFactory *metrics.LocalFactory
+	metricsFactory *metricstest.Factory
 }
 
 func (s *tracerSuite) SetupTest() {
-	s.metricsFactory = metrics.NewLocalFactory(0)
+	s.metricsFactory = metricstest.NewFactory(0)
 	metrics := NewMetrics(s.metricsFactory, nil)
 
 	s.tracer, s.closer = NewTracer("DOOP", // respect the classics, man!
@@ -91,10 +91,10 @@ func (s *tracerSuite) TestBeginRootSpan() {
 	sp.Finish()
 	s.NotNil(ss.duration)
 
-	testutils.AssertCounterMetrics(s.T(), s.metricsFactory, []testutils.ExpectedMetric{
-		{Name: "jaeger.finished_spans", Value: 1},
-		{Name: "jaeger.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 1},
-		{Name: "jaeger.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 1},
+	s.metricsFactory.AssertCounterMetrics(s.T(), []metricstest.ExpectedMetric{
+		{Name: "jaeger.tracer.finished_spans", Value: 1},
+		{Name: "jaeger.tracer.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 1},
+		{Name: "jaeger.tracer.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 1},
 	}...)
 }
 
@@ -114,10 +114,10 @@ func (s *tracerSuite) TestStartChildSpan() {
 	sp2.Finish()
 	s.NotNil(sp2.(*Span).duration)
 	sp1.Finish()
-	testutils.AssertCounterMetrics(s.T(), s.metricsFactory, []testutils.ExpectedMetric{
-		{Name: "jaeger.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 2},
-		{Name: "jaeger.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 1},
-		{Name: "jaeger.finished_spans", Value: 2},
+	s.metricsFactory.AssertCounterMetrics(s.T(), []metricstest.ExpectedMetric{
+		{Name: "jaeger.tracer.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 2},
+		{Name: "jaeger.tracer.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 1},
+		{Name: "jaeger.tracer.finished_spans", Value: 2},
 	}...)
 }
 
@@ -145,10 +145,10 @@ func (s *tracerSuite) TestStartSpanWithMultipleReferences() {
 	sp3.Finish()
 	sp2.Finish()
 	sp1.Finish()
-	testutils.AssertCounterMetrics(s.T(), s.metricsFactory, []testutils.ExpectedMetric{
-		{Name: "jaeger.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 4},
-		{Name: "jaeger.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 3},
-		{Name: "jaeger.finished_spans", Value: 4},
+	s.metricsFactory.AssertCounterMetrics(s.T(), []metricstest.ExpectedMetric{
+		{Name: "jaeger.tracer.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 4},
+		{Name: "jaeger.tracer.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 3},
+		{Name: "jaeger.tracer.finished_spans", Value: 4},
 	}...)
 	assert.Len(s.T(), sp4.(*Span).references, 3)
 }
@@ -165,10 +165,10 @@ func (s *tracerSuite) TestStartSpanWithOnlyFollowFromReference() {
 	sp2.Finish()
 	s.NotNil(sp2.(*Span).duration)
 	sp1.Finish()
-	testutils.AssertCounterMetrics(s.T(), s.metricsFactory, []testutils.ExpectedMetric{
-		{Name: "jaeger.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 2},
-		{Name: "jaeger.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 1},
-		{Name: "jaeger.finished_spans", Value: 2},
+	s.metricsFactory.AssertCounterMetrics(s.T(), []metricstest.ExpectedMetric{
+		{Name: "jaeger.tracer.started_spans", Tags: map[string]string{"sampled": "y"}, Value: 2},
+		{Name: "jaeger.tracer.traces", Tags: map[string]string{"sampled": "y", "state": "started"}, Value: 1},
+		{Name: "jaeger.tracer.finished_spans", Value: 2},
 	}...)
 	assert.Len(s.T(), sp2.(*Span).references, 1)
 }
@@ -195,11 +195,11 @@ func (s *tracerSuite) TestTraceStartedOrJoinedMetrics() {
 		s.Equal(test.sampled, sp1.Context().(SpanContext).IsSampled())
 		s.Equal(test.sampled, sp2.Context().(SpanContext).IsSampled())
 
-		testutils.AssertCounterMetrics(s.T(), s.metricsFactory, []testutils.ExpectedMetric{
-			{Name: "jaeger.started_spans", Tags: map[string]string{"sampled": test.label}, Value: 3},
-			{Name: "jaeger.finished_spans", Value: 3},
-			{Name: "jaeger.traces", Tags: map[string]string{"sampled": test.label, "state": "started"}, Value: 1},
-			{Name: "jaeger.traces", Tags: map[string]string{"sampled": test.label, "state": "joined"}, Value: 1},
+		s.metricsFactory.AssertCounterMetrics(s.T(), []metricstest.ExpectedMetric{
+			{Name: "jaeger.tracer.started_spans", Tags: map[string]string{"sampled": test.label}, Value: 3},
+			{Name: "jaeger.tracer.finished_spans", Value: 3},
+			{Name: "jaeger.tracer.traces", Tags: map[string]string{"sampled": test.label, "state": "started"}, Value: 1},
+			{Name: "jaeger.tracer.traces", Tags: map[string]string{"sampled": test.label, "state": "joined"}, Value: 1},
 		}...)
 	}
 }
@@ -424,4 +424,36 @@ func (p *dummyPropagator) Extract(carrier interface{}) (SpanContext, error) {
 		return emptyContext, nil
 	}
 	return emptyContext, opentracing.ErrSpanContextNotFound
+}
+
+func TestAPI(t *testing.T) {
+	harness.RunAPIChecks(
+		t,
+		func() (opentracing.Tracer, func()) {
+			tracer, closer := NewTracer("DOOP", // respect the classics, man!
+				NewConstSampler(true),
+				NewNullReporter(),
+			)
+
+			return tracer, func() { closer.Close() }
+		},
+		harness.CheckEverything(),
+		harness.UseProbe(&jaegerProbe{}),
+	)
+}
+
+type jaegerProbe struct{}
+
+// SameTrace helps tests assert that this tracer's spans are from the same trace.
+func (jp *jaegerProbe) SameTrace(first, second opentracing.Span) bool {
+	firstCtx := first.Context().(SpanContext)
+	secondCtx := second.Context().(SpanContext)
+	return firstCtx.traceID == secondCtx.traceID
+}
+
+// SameSpanContext helps tests assert that a span and a context are from the same trace and span.
+func (jp *jaegerProbe) SameSpanContext(first opentracing.Span, second opentracing.SpanContext) bool {
+	firstCtx := first.Context().(SpanContext)
+	secondCtx := second.(SpanContext)
+	return firstCtx.traceID == secondCtx.traceID && firstCtx.spanID == secondCtx.spanID
 }

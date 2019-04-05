@@ -21,12 +21,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uber/jaeger-lib/metrics"
+	"github.com/uber/jaeger-lib/metrics/metricstest"
 
 	"github.com/uber/jaeger-client-go"
 )
 
 func TestApplyOptions(t *testing.T) {
-	metricsFactory := metrics.NewLocalFactory(0)
+	metricsFactory := metricstest.NewFactory(0)
 	observer := fakeObserver{}
 	sampler := &fakeSampler{}
 	contribObserver := fakeContribObserver{}
@@ -37,7 +38,9 @@ func TestApplyOptions(t *testing.T) {
 		Sampler(sampler),
 		ContribObserver(contribObserver),
 		Gen128Bit(true),
+		PoolSpans(true),
 		ZipkinSharedRPCSpan(true),
+		MaxTagValueLength(1024),
 	)
 	assert.Equal(t, jaeger.StdLogger, opts.logger)
 	assert.Equal(t, sampler, opts.sampler)
@@ -45,7 +48,9 @@ func TestApplyOptions(t *testing.T) {
 	assert.Equal(t, []jaeger.Observer{observer}, opts.observers)
 	assert.Equal(t, []jaeger.ContribObserver{contribObserver}, opts.contribObservers)
 	assert.True(t, opts.gen128Bit)
+	assert.True(t, opts.poolSpans)
 	assert.True(t, opts.zipkinSharedRPCSpan)
+	assert.Equal(t, 1024, opts.maxTagValueLength)
 }
 
 func TestTraceTagOption(t *testing.T) {
